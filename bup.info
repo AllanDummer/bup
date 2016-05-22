@@ -1,0 +1,8 @@
+name = Commerce bulk update prices
+description = Update commerce prices in bulk by product type.
+core = 7.x
+package = Commerce
+version = 7.0
+
+dependencies[] = ctools
+dependencies[] = commerce

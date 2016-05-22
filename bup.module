@@ -1,0 +1,419 @@
+<?php
+
+/**
+ * Update commerce prices in bulk per product type by a percentage.
+ */
+
+/*
+ * Impliment hook_menu
+ */
+function bup_menu() {
+	$items ['admin/commerce/products/bulk_update_prices'] = array (
+			'title' => 'Bulk Update Prices',
+			'description' => 'Increase or decrease prices per product type.',
+			'page callback' => 'drupal_get_form',
+			'page arguments' => array (
+					'bup_primary_form' 
+			),
+			'access arguments' => array (
+					'bulk_update_prices' 
+			),
+			'type' => MENU_NORMAL_ITEM 
+	);
+	
+	return $items;
+}
+
+/*
+ * Impliment hook_permission
+ */
+function bup_permission() {
+	$perms = array ();
+	
+	$perms ['bulk_update_prices'] = array (
+			'title' => t ( 'Can bulk update product prices' ),
+			'description' => t ( 'Be carefull, this can be dangerous in the wrong hands.' ),
+			'restrict access' => TRUE 
+	);
+	
+	return $perms;
+}
+
+/**
+ * Form implementation of primary multiform.
+ *
+ * @see hook_menu()
+ */
+function bup_primary_form( $form, &$form_state ) {
+	
+	// Check to see if anything has been stored.
+	if ($form_state ['rebuild']) {
+		$form_state ['input'] = array ();
+	}
+	
+	if (empty ( $form_state ['storage'] )) {
+		// No step has been set so start with the first.
+		$form_state ['storage'] = array (
+				'step' => 'bup_first_form' 
+		);
+	}
+	
+	// Return the current form
+	$function = $form_state ['storage'] ['step'];
+	$form = $function ( $form, $form_state );
+	
+	return $form;
+}
+
+/**
+ * Submit handler for the primary multiform.
+ *
+ * @see bup_primary_form().
+ */
+function bup_primary_form_submit( $form, &$form_state ) {
+	$values = $form_state ['values'];
+	
+	if (isset ( $values ['back'] ) && $values ['op'] == $values ['back']) {
+		// Moving back in form.
+		$step = $form_state ['storage'] ['step'];
+		
+		// Call current step submit handler if it exists to unset step form data.
+		if (function_exists ( $step . '_submit' )) {
+			$function = $step . '_submit';
+			$function ( $form, $form_state );
+		}
+		
+		// Remove the last saved step so we use it next.
+		$last_step = array_pop ( $form_state ['storage'] ['steps'] );
+		$form_state ['storage'] ['step'] = $last_step;
+	} else {
+		
+		// Record step.
+		$step = $form_state ['storage'] ['step'];
+		$form_state ['storage'] ['steps'] [ ] = $step;
+		
+		// Call step submit handler if it exists.
+		if (function_exists ( $step . '_submit' )) {
+			$function = $step . '_submit';
+			$function ( $form, $form_state );
+		}
+	}
+	return;
+}
+
+/**
+ * Create options form
+ */
+function bup_first_form( $form, &$form_state ) {
+	if (! empty ( $form_state ['storage'] )) {
+		$values = $form_state ['storage'];
+	}
+	
+	$form ['explanation_markup'] = array (
+			'#markup' => 'This will increase, or decrease, product prices per product type.<br />' . 'Use a positive percentage to increase prices and a negative percentage to descrease prices.<br />' . 'No decimal points are allowed.',
+			'#prefix' => '<div class="explanation-message"><p>',
+			'#suffix' => '</p></div>' 
+	);
+	
+	$product_types = commerce_product_types ( );
+	
+	foreach ( $product_types as $key => $type ) {
+		$form ['prices_form'] [$key] = array (
+				'#type' => 'textfield',
+				'#title' => t ( $type ['name'] ),
+				'#default_value' => isset ( $values [$key] ) ? $values [$key] : 0,
+				'#size' => 5,
+				'#maxlength' => 5,
+				'#name' => $key,
+				'#element_validate' => array (
+						'bup_element_validate_integer' 
+				),
+				'#prefix' => '<div><div class="fences-field-label-inline">',
+				'#suffix' => '</div></div>' 
+		);
+	}
+	
+	$form ['#validate'] [ ] = 'bup_first_form_validate';
+	$form ['#submit'] [ ] = 'bup_first_form_submit';
+	
+	$form ['submit'] = array (
+			'#type' => 'submit',
+			'#value' => t ( 'Next' ) 
+	);
+	
+	$form_state ['product_types'] = $product_types;
+	
+	return $form;
+}
+
+function bup_element_validate_integer( $element, &$form_state ) {
+	$value = $element ['#value'];
+	if ($value !== '' && (! is_numeric ( $value ) || intval ( $value ) != $value || strpos ( $value, '.' ))) {
+		form_error ( $element, t ( '%name must be an integer with no decimal points.', array (
+				'%name' => $element ['#title'] 
+		) ) );
+	}
+}
+
+function bup_first_form_validate( &$form, &$form_state ) {
+	$update = FALSE;
+	$product_type = $form_state ['product_types'];
+	
+	// Put collected values in storage.
+	foreach ( $product_type as $key => $type ) {
+		if ($form_state ['values'] [$key] != 0) {
+			$update = TRUE;
+		}
+	}
+	
+	if (! $update) {
+		form_set_error ( 'update', t ( 'You need to specify a price change for at least one product type.' ) );
+	}
+}
+
+/**
+ * Submit handler for the first form.
+ *
+ * @see bup_first_form()
+ */
+function bup_first_form_submit( $form, &$form_state ) {
+	$values = $form_state ['values'];
+	
+	// Save values to the form storage, add the next step function callback
+	$form_state ['rebuild'] = TRUE; // This is very important to have!
+	
+	$product_type = $form_state ['product_types'];
+	
+	// Put collected values in storage.
+	foreach ( $product_type as $key => $type ) {
+		$form_state ['storage'] [$key] = check_plain ( $form_state ['values'] [$key] );
+	}
+	
+	$form_state ['storage'] ['step'] = 'bup_second_form';
+}
+
+function bup_second_form( &$form, &$form_state ) {
+	$product_types = $form_state ['product_types'];
+	
+	foreach ( $product_types as $key => $type ) {
+		
+		$name = $type ['name'];
+		$value = $form_state ['values'] [$key];
+		$radios = TRUE;
+		
+		// By the time we get here we know we are working with intergers
+		if ($value > 0) {
+			$change = $name . ' will be increased by ' . $value . '%';
+		} elseif ($value < 0) {
+			$change = $name . ' will be decreased by ' . $value . '%';
+		} else {
+			$change = $name . ' will not be changed.';
+			$radios = FALSE;
+		}
+		
+		if ($radios) {
+			$form ['confirm_change'] [$key] = array (
+					'#type' => 'radios',
+					'#title' => t ( $change ),
+					'#options' => array (
+							'ok' => 'Ok',
+							'cancel' => 'Cancel' 
+					),
+					'#default_value' => 'cancel',
+					'#attributes' => array (
+							'class' => array (
+									'inline-radios' 
+							) 
+					) 
+			);
+		} else {
+			$form ['no_changes'] [$key] = array (
+					'#markup' => t ( '<p><strong>' . $change . '</strong></p>' ) 
+			);
+		}
+	}
+	
+	$form ['#validate'] [ ] = 'bup_second_form_validate';
+	
+	$form ['back'] = array (
+			'#type' => 'submit',
+			'#value' => t ( 'Back' ),
+			'#limit_validation_errors' => array (),
+			'#submit' => array (
+					'bup_second_form_submit' 
+			) 
+	);
+	$form ['submit'] = array (
+			'#type' => 'submit',
+			'#value' => t ( 'Change prices' ) 
+	);
+	
+	return $form;
+}
+
+function bup_second_form_validate( &$form, &$form_state ) {
+	$change = array ();
+	
+	$product_types = $form_state ['product_types'];
+	
+	foreach ( $product_types as $key => $type ) {
+		if ($form_state ['values'] [$key] == 'ok') {
+			$change [$key] = $form_state ['storage'] [$key];
+		}
+	}
+	
+	if (empty ( $change )) {
+		form_set_error ( 'update', t ( 'You need to accept a price change on at least one product type.' ) );
+	} else {
+		$form_state ['change_prices'] = $change;
+	}
+}
+
+function bup_second_form_submit( &$form, &$form_state ) {
+	$values = $form_state ['values'];
+	$form_state ['rebuild'] = TRUE;
+	
+	if (isset ( $values ['back'] ) && $values ['op'] == $values ['back']) {
+		
+		// The user pushed the back button. Clear out selected values.
+		$form_state ['storage'] ['step'] = 'bup_first_form';
+	} else {
+		$form_state ['storage'] = $form_state ['change_prices'];
+		$form_state ['storage'] ['step'] = 'bup_form_complete';
+	}
+}
+
+function bup_form_complete( &$form, &$form_state ) {
+	$change_prices = $form_state ['change_prices'];
+	$count = 0;
+	$products = array ();
+	$updated = '';
+	$currency_code = commerce_default_currency ( );
+	$summary = array ();
+	
+	foreach ( $change_prices as $type => $change ) {
+		
+		$title = ucfirst ( $type );
+		$title = str_replace ( '_', ' ', $title );
+		
+		if ($change > 0) {
+			$summary [ ] = 'Increased ' . $title . ' by ' . abs ( $change ) . '%';
+			$updated .= '<p><strong>Increased ' . $title . ' by ' . abs ( $change ) . '%</strong></p><ul>';
+		} else {
+			$summary [ ] = 'Decreased ' . $title . ' by ' . abs ( $change ) . '%';
+			$updated .= '<p><strong>Decreased ' . $title . ' by ' . abs ( $change ) . '%</strong></p><ul>';
+		}
+		
+		$products = commerce_product_load_multiple ( array (), array (
+				'type' => $type 
+		) );
+		
+		if ($products) {
+			foreach ( $products as $pid => $product ) {
+				
+				$percent = 1 + ($change / 100);
+				
+				$old_price = $products [$pid]->commerce_price ['und'] [0] ['amount'];
+				$new_price = floor ( $old_price * $percent );
+				
+				$entry = array (
+						'commerce_price_amount' => $new_price 
+				);
+				
+				try {
+					$update = db_update ( 'field_data_commerce_price' )->fields ( $entry )
+						->condition ( 'entity_id', $pid )
+						->execute ( );
+				} catch ( Exception $e ) {
+					drupal_set_message ( t ( 'db_update failed. Message = %message, query= %query', array (
+							'%message' => $e->getMessage ( ),
+							'%query' => $e->query_string 
+					) ), 'error' );
+				}
+				
+				$old_price = commerce_currency_format ( $old_price, $currency_code );
+				$new_price = commerce_currency_format ( $new_price, $currency_code );
+				
+				if ($change > 0) {
+					$text = $product->sku . ' - ' . $product->title . ' Increased by ' . abs ( $change ) . '%. Old price: ' . $old_price . ' - New price: ' . $new_price;
+				} else {
+					$text = $product->sku . ' - ' . $product->title . ' Decreased by ' . abs ( $change ) . '%. Old price: ' . $old_price . ' - New price: ' . $new_price;
+				}
+				
+				$updated .= '<li>' . $text . '</li>';
+				
+				$count += 1;
+			}
+		}
+		$updated .= '</ul>';
+	}
+	
+	$markup = '<p>Updated ' . $count . ' products.</p><p>' . $updated . '</p>';
+	bup_add_log ( $markup, $summary );
+	
+	$form ['message'] = array (
+			'#markup' => t ( $markup ) 
+	);
+	return $form;
+}
+
+function bup_add_log( $markup, $summary ) {
+	global $user;
+	
+	// entity_create replaces the procedural steps in the first example of
+	// creating a new object $node and setting its 'type' and uid property
+	$values = array (
+			'type' => 'bulk_update_prices',
+			'uid' => $user->uid,
+			'status' => 1,
+			'comment' => 0,
+			'promote' => 0 
+	);
+	$entity = entity_create ( 'node', $values );
+	
+	// The entity is now created, but we have not yet simplified use of it.
+	// Now create an entity_metadata_wrapper around the new node entity
+	// to make getting and setting values easier
+	$ewrapper = entity_metadata_wrapper ( 'node', $entity );
+	
+	// Using the wrapper, we do not have to worry about telling Drupal
+	// what language we are using. The Entity API handles that for us.
+	$date = date ( "Y-m-d H:i:s" );
+	
+	$ewrapper->title->set ( 'Bulk price update - ' . $date );
+	
+	// Setting the body is a bit different from other properties or fields
+	// because the body can have both its complete value and its summary
+	
+	$count = count ( $summary );
+	$text = '<p>';
+	
+	foreach ( $summary as $value ) {
+		$count -= 1;
+		if ($count != 0) {
+			$text .= $value . '<br />';
+		} else {
+			$text .= $value . '</p>';
+		}
+	}
+	
+	$ewrapper->body->set ( array (
+			'value' => $markup,
+			'format' => 'basic_html' 
+	) );
+	$ewrapper->body->summary->set ( $text );
+	
+	// Entity API cannot set date field values so the 'old' method must be used
+	
+	$entity->field_my_date [LANGUAGE_NONE] [0] = array (
+			'value' => $date,
+			'timezone' => 'UTC',
+			'timezone_db' => 'UTC' 
+	);
+	
+	// Now just save the wrapper and the entity
+	// There is some suggestion that the 'true' argument is necessary to
+	// the entity save method to circumvent a bug in Entity API. If there is
+	// such a bug, it almost certainly will get fixed, so make sure to check.
+	$ewrapper->save ( );
+}
